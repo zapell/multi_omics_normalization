@@ -1,0 +1,432 @@
+---
+title: "Data Normalization for Multi-Omics"
+output:
+  html_document:
+    df_print: paged
+---
+
+# Data Normalization for Multi-Omics
+
+**Learning Objectives**
+
+By the end of this 30-minute exercise you will be able to:
+
+1.  Explain *why* normalization is necessary before comparing samples in omics experiments.
+2.  Compute **RPKM** and **TPM** for RNA-seq read counts and describe when each is appropriate.
+3.  Apply **quantile normalization** to intensity-based data (microarray / proteomics).
+4.  Apply **Pareto scaling** to metabolomics data and contrast it with autoscaling.
+
+**Data file:** `gene_treatment_data.txt` (5 genes, 6 samples, with gene lengths)
+
+**Structure:** Each section has a worked example followed by a short exercise. Exercises are "fill in the blank" — look for lines marked `### YOUR CODE HERE ###`.
+
+```{r setup, message=FALSE}
+library(tidyverse)
+library(reshape2)
+
+# Consistent plot style for the session
+theme_set(theme_bw(base_size = 13))
+```
+
+------------------------------------------------------------------------
+
+## Section 1: RNA-seq Normalization — RPKM and TPM (\~10 min)
+
+### Why normalize RNA-seq counts?
+
+Raw read counts for a gene depend on two **technical factors** that have nothing to do with biology:
+
+| Bias | Cause | Fix |
+|------------------------|----------------------------|--------------------|
+| **Sequencing depth** | A sample sequenced more deeply produces more reads for *every* gene. | Divide by total reads (per-million scaling). |
+| **Gene length** | Longer transcripts capture more reads even at equal expression. | Divide by gene length (per-kilobase scaling). |
+
+**RPKM** (Reads Per Kilobase per Million mapped reads) corrects for both:
+
+$$\text{RPKM} = \frac{\text{read count}}{\left(\frac{\text{gene length}}{10^3}\right) \times \left(\frac{\text{total reads}}{10^6}\right)}$$
+
+**TPM** (Transcripts Per Million) also corrects for both biases, but normalizes *per sample* so that the column totals are always 1,000,000, making samples directly comparable:
+
+$$\text{TPM}_i = \frac{\text{read count}_i \;/\; \text{gene length}_i}{\sum_j \left(\text{read count}_j \;/\; \text{gene length}_j\right)} \times 10^6$$
+
+> **Rule of thumb:** TPM is preferred in modern analyses because RPKM column sums differ between samples, which can distort cross-sample comparisons.
+
+```{r load-data}
+# Load the gene expression data (5 genes, 6 samples + gene length column)
+gene_data <- read.delim("gene_treatment_data.txt", row.names = 1)
+cat("Shape:", nrow(gene_data), "x", ncol(gene_data), "\n")
+gene_data
+```
+
+```{r raw-plots, fig.width=12, fig.height=3.5}
+# Separate the count columns from the gene length column
+counts <- gene_data[, 1:6]   # 5 genes x 6 samples
+lengths <- gene_data$length   # gene lengths in base pairs
+
+# Visualize the raw data — notice how samples have different totals (sequencing depth)
+par(mfrow = c(1, 2))
+
+# Bar plot of raw read counts per sample
+counts_long <- melt(as.matrix(counts))
+colnames(counts_long) <- c("gene", "sample", "reads")
+p1 <- ggplot(counts_long, aes(x = sample, y = reads, fill = gene)) +
+  geom_col(position = "dodge") +
+  labs(title = "Raw Read Counts per Sample", y = "Reads") +
+  theme(axis.text.x = element_text(angle = 0))
+
+# Total reads per sample
+depth <- data.frame(sample = colnames(counts), total = colSums(counts))
+p2 <- ggplot(depth, aes(x = sample, y = total)) +
+  geom_col(fill = "steelblue") +
+  labs(title = "Total Reads per Sample (Sequencing Depth)", y = "Total Reads")
+
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+```
+
+```{r rpkm}
+# --- RPKM calculation (vectorized) ---
+# total_reads: sum of counts per sample (column sums)
+total_reads <- colSums(counts)
+
+# Divide each count by (gene_length_in_kb * total_reads_in_millions)
+rpkm <- sweep(counts, 1, lengths / 1e3, "/")
+rpkm <- sweep(rpkm, 2, total_reads / 1e6, "/")
+
+cat("RPKM values:\n")
+round(rpkm, 1)
+```
+
+```{r tpm}
+# --- TPM calculation ---
+# Step 1: compute the rate = reads per kilobase of gene
+rate <- sweep(counts, 1, lengths / 1e3, "/")
+
+# Step 2: scale each sample (column) so that the sum equals 1,000,000
+tpm <- sweep(rate, 2, colSums(rate), "/") * 1e6
+
+cat("TPM column sums (should each be 1,000,000):\n")
+print(round(colSums(tpm), 1))
+cat("\n")
+round(tpm, 1)
+```
+
+```{r rpkm-vs-tpm, fig.width=12, fig.height=3.5}
+# Compare RPKM vs TPM side by side
+rpkm_long <- melt(as.matrix(rpkm))
+colnames(rpkm_long) <- c("gene", "sample", "value")
+p1 <- ggplot(rpkm_long, aes(x = sample, y = value, fill = gene)) +
+  geom_col(position = "dodge") +
+  labs(title = "After RPKM Normalization", y = "RPKM") +
+  theme(axis.text.x = element_text(angle = 0))
+
+tpm_long <- melt(as.matrix(tpm))
+colnames(tpm_long) <- c("gene", "sample", "value")
+p2 <- ggplot(tpm_long, aes(x = sample, y = value, fill = gene)) +
+  geom_col(position = "dodge") +
+  labs(title = "After TPM Normalization", y = "TPM") +
+  theme(axis.text.x = element_text(angle = 0))
+
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+
+# Notice: RPKM column sums differ, TPM column sums are all 1,000,000
+cat("RPKM column sums:", round(colSums(rpkm), 1), "\n")
+cat("TPM  column sums:", round(colSums(tpm), 1), "\n")
+```
+
+### Exercise 1 — Compute RPKM and TPM yourself
+
+The cell below creates a small synthetic dataset with 3 genes and 2 samples. Fill in the missing lines to compute RPKM and TPM.
+
+```{r exercise-1}
+# Synthetic data
+ex_counts <- data.frame(
+  sample_A = c(200, 100, 50),
+  sample_B = c(300, 80, 70),
+  row.names = c("geneX", "geneY", "geneZ")
+)
+ex_lengths <- c(geneX = 2000, geneY = 500, geneZ = 1000)
+
+cat("Counts:\n")
+print(ex_counts)
+cat("\nGene lengths:\n")
+print(ex_lengths)
+
+# --- RPKM ---
+ex_total <- colSums(ex_counts)
+# ex_rpkm <- ### YOUR CODE HERE ###   # one-line vectorized RPKM formula
+
+# cat("\nRPKM:\n")
+# print(round(ex_rpkm, 1))
+
+# --- TPM ---
+# ex_rate <- ### YOUR CODE HERE ###    # reads divided by gene length in kb
+# ex_tpm  <- ### YOUR CODE HERE ###    # scale so each column sums to 1e6
+
+# cat("\nTPM:\n")
+# print(round(ex_tpm, 1))
+# cat("TPM column sums:", round(colSums(ex_tpm), 1), "\n")
+```
+
+------------------------------------------------------------------------
+
+## Section 2: Quantile Normalization — Microarray / Proteomics (\~8 min)
+
+### When and why
+
+Microarray and label-free proteomics produce **intensity** values. Technical variation (dye bias, detector differences) causes the intensity *distributions* to differ across samples even when the underlying biology is the same.
+
+**Quantile normalization** forces every sample to have the *same* distribution by:
+
+1.  **Sort** each column independently.
+2.  **Average** across each row of the sorted matrix.
+3.  **Replace** each original value with the average that matches its rank.
+
+> This is a strong assumption — it works well when most features are *not* differentially expressed or abundant.
+
+```{r qn-toy}
+# --- Small worked example (4 genes, 3 samples) ---
+df_toy <- data.frame(
+  C1 = c(5, 2, 3, 4),
+  C2 = c(4, 1, 4, 2),
+  C3 = c(3, 4, 6, 8),
+  row.names = c("A", "B", "C", "D")
+)
+cat("Original data:\n")
+df_toy
+```
+
+```{r qn-steps}
+# Step 1: Sort each column independently
+df_sorted <- as.data.frame(apply(df_toy, 2, sort))
+rownames(df_sorted) <- rownames(df_toy)
+cat("Step 1 — Sorted columns:\n")
+df_sorted
+
+# Step 2: Compute the row means of the sorted data
+row_means <- rowMeans(df_sorted)
+names(row_means) <- 1:length(row_means)  # label by rank
+cat("\nStep 2 — Row means (one value per rank):\n")
+print(row_means)
+
+# Step 3: Map each original value's rank to the corresponding row mean
+df_qn <- as.data.frame(apply(df_toy, 2, function(col) {
+  ranks <- rank(col, ties.method = "min")
+  row_means[ranks]
+}))
+rownames(df_qn) <- rownames(df_toy)
+cat("\nStep 3 — Quantile-normalized data:\n")
+df_qn
+```
+
+```{r qn-function}
+# Wrap it into a reusable function
+quantile_normalize <- function(df) {
+  # Quantile-normalize columns of a numeric data frame.
+  df_sorted <- as.data.frame(apply(df, 2, sort))
+  row_means <- rowMeans(df_sorted)
+  names(row_means) <- 1:length(row_means)
+  df_qn <- as.data.frame(apply(df, 2, function(col) {
+    ranks <- rank(col, ties.method = "min")
+    row_means[ranks]
+  }))
+  rownames(df_qn) <- rownames(df)
+  return(df_qn)
+}
+```
+
+```{r qn-proteomics, fig.width=12, fig.height=3.5}
+# Test on simulated proteomics data: 3 samples with different Poisson means
+set.seed(42)
+df_prot <- data.frame(
+  sample_1 = rpois(5000, lambda = 10),
+  sample_2 = rpois(5000, lambda = 15),
+  sample_3 = rpois(5000, lambda = 20)
+)
+
+df_prot_qn <- quantile_normalize(df_prot)
+
+# Before / after density plots
+prot_long <- melt(as.matrix(df_prot))
+colnames(prot_long) <- c("feature", "sample", "value")
+p1 <- ggplot(prot_long, aes(x = value, color = sample)) +
+  geom_density(linewidth = 0.8) +
+  labs(title = "Before Quantile Normalization")
+
+prot_qn_long <- melt(as.matrix(df_prot_qn))
+colnames(prot_qn_long) <- c("feature", "sample", "value")
+p2 <- ggplot(prot_qn_long, aes(x = value, color = sample)) +
+  geom_density(linewidth = 0.8) +
+  labs(title = "After Quantile Normalization")
+
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+```
+
+### Exercise 2 — Quantile-normalize a new dataset
+
+Generate 4 samples of 2000 features each, drawn from Poisson distributions with means 5, 12, 25, and 40. Apply quantile normalization, then make a before/after density plot.
+
+```{r exercise-2, fig.width=12, fig.height=3.5}
+set.seed(7)
+
+# df_ex2 <- data.frame(
+#   S1 = rpois(2000, lambda = 5),
+#   S2 = rpois(2000, lambda = 12),
+#   S3 = ### YOUR CODE HERE ###,
+#   S4 = ### YOUR CODE HERE ###
+#)
+
+# df_ex2_qn <- ### YOUR CODE HERE ###   # apply quantile normalization
+
+# Plot before and after
+### YOUR CODE HERE ###   # density plot before (left) and after (right)
+```
+
+------------------------------------------------------------------------
+
+## Section 3: Scaling for Metabolomics — Pareto and Autoscaling (\~8 min)
+
+### The problem
+
+LC-MS metabolomics data spans several orders of magnitude. A few high-abundance metabolites dominate the variance, masking biologically interesting low-abundance signals.
+
+**Scaling** (applied *per feature*, across samples) addresses this:
+
+| Method | Formula (for feature *i*) | Effect |
+|----------------|-----------------------------------------|----------------|
+| **Autoscaling** (z-score) | $(x - \bar{x}) / s$ | Every feature gets unit variance. Can inflate noisy features. |
+| **Pareto scaling** | $(x - \bar{x}) / \sqrt{s}$ | Down-weights large features less aggressively than autoscaling. Preferred for metabolomics. |
+
+> **Note:** Scaling operates across *samples for each feature* (row-wise when features are rows), unlike quantile normalization which operates on whole columns.
+
+```{r scaling, fig.width=16, fig.height=3.5}
+# Simulate 6 metabolomics samples with power-law-like distributions
+# Using beta distribution to mimic scipy.stats.powerlaw(a) which has CDF x^a on [0,1]
+set.seed(21)
+power_rvs <- function(a, n) {
+  # power-law distribution on [0,1]: CDF = x^a, inverse CDF = u^(1/a)
+  runif(n)^(1 / a)
+}
+
+df_met <- data.frame(
+  sample_1 = power_rvs(0.5, 5000),
+  sample_2 = power_rvs(0.7, 5000),
+  sample_3 = power_rvs(1.5, 5000),
+  sample_4 = power_rvs(2.0, 5000),
+  sample_5 = power_rvs(1.3, 5000),
+  sample_6 = power_rvs(0.3, 5000)
+)
+
+# Feature-wise statistics (each row = one metabolite measured across 6 samples)
+row_mean <- rowMeans(df_met)
+row_std  <- apply(df_met, 1, sd)
+
+# Pareto scaling: subtract mean, divide by sqrt(std)
+df_pareto <- sweep(df_met, 1, row_mean, "-")
+df_pareto <- sweep(df_pareto, 1, sqrt(row_std), "/")
+
+# Autoscaling (z-score): subtract mean, divide by std
+df_auto <- sweep(df_met, 1, row_mean, "-")
+df_auto <- sweep(df_auto, 1, row_std, "/")
+
+# Compare all three
+met_long <- melt(as.matrix(df_met))
+colnames(met_long) <- c("feature", "sample", "value")
+p1 <- ggplot(met_long, aes(x = value, color = sample)) +
+  geom_density(linewidth = 0.8) +
+  labs(title = "Before Scaling") +
+  theme(legend.position = "none")
+
+par_long <- melt(as.matrix(df_pareto))
+colnames(par_long) <- c("feature", "sample", "value")
+p2 <- ggplot(par_long, aes(x = value, color = sample)) +
+  geom_density(linewidth = 0.8) +
+  labs(title = "After Pareto Scaling") +
+  theme(legend.position = "none")
+
+auto_long <- melt(as.matrix(df_auto))
+colnames(auto_long) <- c("feature", "sample", "value")
+p3 <- ggplot(auto_long, aes(x = value, color = sample)) +
+  geom_density(linewidth = 0.8) +
+  labs(title = "After Autoscaling (z-score)") +
+  theme(legend.position = "none")
+
+gridExtra::grid.arrange(p1, p2, p3, ncol = 3)
+```
+
+### Exercise 3 — Implement Pareto scaling
+
+Using the `df_met` data frame from above, implement Pareto scaling yourself. Then answer the question at the bottom.
+
+```{r exercise-3, fig.width=10, fig.height=3.5}
+# Compute the row (feature) mean and standard deviation
+# feat_mean <- ### YOUR CODE HERE ###
+# feat_std  <- ### YOUR CODE HERE ###
+
+# Pareto scaling: subtract mean, divide by sqrt of std
+# df_pareto_ex <- ### YOUR CODE HERE ###
+
+# Quick check — plot one sample before and after
+# par_before <- data.frame(value = df_met$sample_1)
+# par_after  <- data.frame(value = df_pareto_ex$sample_1)
+
+# p1 <- ggplot(par_before, aes(x = value)) +
+#   geom_density(linewidth = 0.8, color = "coral") +
+#   labs(title = "sample_1 — Raw")
+# 
+# p2 <- ggplot(par_after, aes(x = value)) +
+#   geom_density(linewidth = 0.8, color = "teal") +
+#   labs(title = "sample_1 — Pareto Scaled")
+# 
+# gridExtra::grid.arrange(p1, p2, ncol = 2)
+
+# QUESTION: Why might you prefer Pareto scaling over autoscaling
+# for metabolomics data?
+#
+### YOUR ANSWER HERE ###
+```
+
+------------------------------------------------------------------------
+
+## Section 4: Summary and Reflection (\~4 min)
+
+| Omics type | Typical normalization | Key idea |
+|-------------------|-----------------------------------|------------------|
+| RNA-seq | RPKM / TPM | Correct for **gene length** and **sequencing depth** |
+| Microarray / Proteomics | Quantile normalization | Force all samples to share the **same distribution** |
+| Metabolomics | Pareto / Autoscaling | Reduce dominance of **high-variance features** |
+
+### Key take-aways
+
+-   **Always visualize** your data before and after normalization.
+-   No single method works for all data types — the right choice depends on the technology and its specific biases.
+-   TPM is generally preferred over RPKM for RNA-seq because column totals are consistent across samples.
+
+### Exercise 4 — Match the method
+
+Replace each `"???"` with the correct normalization method name from: `"RPKM"`, `"TPM"`, `"Quantile"`, `"Pareto"`, `"Autoscaling"`
+
+```{r exercise-4}
+answers <- c(
+  "Corrects for gene length and sequencing depth; column sums vary"          = "???",
+  "Corrects for gene length and sequencing depth; column sums are 1e6"       = "???",
+  "Forces identical distributions across samples"                            = "???",
+  "Mean-centers and divides by sqrt(sd); good for metabolomics"              = "???",
+  "Mean-centers and divides by sd; can inflate noisy low-abundance features" = "???"
+)
+
+for (i in seq_along(answers)) {
+  cat(sprintf("  %12s  <-  %s\n", answers[i], names(answers)[i]))
+}
+```
+
+------------------------------------------------------------------------
+
+### Further Reading
+
+-   Zhao et al. (2020) — [TPM, FPKM, or Normalized Counts? A Comparative Study](https://pmc.ncbi.nlm.nih.gov/articles/PMC8220791/)
+-   Hicks & Irizarry (2015) — [Quantile normalization assumptions and consequences](https://www.biorxiv.org/content/10.1101/012203v1.full)
+-   van den Berg et al. (2006) — [Centering, scaling, and transformations for metabolomics](https://pmc.ncbi.nlm.nih.gov/articles/PMC1534033/)
+
+```{r done}
+cat("DONE\n")
+```
